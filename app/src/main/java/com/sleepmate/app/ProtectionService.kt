@@ -92,6 +92,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var rejectedCandidateFaceCount = 0
     @Volatile private var reliableFaceFrameCount = 0
     @Volatile private var stableOpenEyeFrameCount = 0
+    private var consecutiveOpenEyeFrames = 0
     @Volatile private var stableClosedEyeFrameCount = 0
     @Volatile private var unknownEyeStateFrameCount = 0
     @Volatile private var cameraFramesReceived = 0
@@ -481,6 +482,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         rejectedCandidateFaceCount = 0
         reliableFaceFrameCount = 0
         stableOpenEyeFrameCount = 0
+        consecutiveOpenEyeFrames = 0
         stableClosedEyeFrameCount = 0
         unknownEyeStateFrameCount = 0
         cameraFramesReceived = 0
@@ -734,21 +736,29 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val eyeStateUnknown = !frontalPoseReliable || (!bothEyesClosed && !bothEyesOpen)
 
                     if (left != null && right != null) eyeStateDetectedInWindow = true
-                    if (eyeStateUnknown) {
-                        // User preference: uncertain eye state is treated in the sleep direction,
-                        // but remains separately counted rather than mislabeled as confirmed closed.
-                        unknownEyeStateFrameCount++
-                    } else if (bothEyesClosed) {
-                        stableClosedEyeFrameCount++
-                        if (stableClosedEyeFrameCount >= 2) eyesClosedDetectedInWindow = true
-                    } else {
+                    val bothEyesReliablyOpen = !eyeStateUnknown && bothEyesOpen
+                    if (bothEyesReliablyOpen) {
                         stableOpenEyeFrameCount++
-                        if (stableOpenEyeFrameCount >= 2) eyesOpenDetectedInWindow = true
+                        consecutiveOpenEyeFrames++
+                        // A single open frame is not enough to interrupt the closed-eye
+                        // timer. Only consecutive, frontal, dual-eye-open frames confirm awake.
+                        if (consecutiveOpenEyeFrames >= 2) eyesOpenDetectedInWindow = true
+                    } else {
+                        consecutiveOpenEyeFrames = 0
+                        if (eyeStateUnknown) {
+                            // Uncertain or conflicting eye state follows the sleep direction,
+                            // but remains separately counted rather than mislabeled as closed.
+                            unknownEyeStateFrameCount++
+                        } else if (bothEyesClosed) {
+                            stableClosedEyeFrameCount++
+                            if (stableClosedEyeFrameCount >= 2) eyesClosedDetectedInWindow = true
+                        }
                     }
 
-                    // Unknown (missing face/probability, non-frontal pose, or conflicting eyes)
-                    // follows the closed-eye timer as explicitly requested by the user.
-                    val closedForSleepDecision = eyeStateUnknown || bothEyesClosed
+                    // Default to the closed/sleep direction. Only two consecutive reliable
+                    // frames with BOTH eyes open may reset the closed-eye timer.
+                    val eyesConfirmedOpen = bothEyesReliablyOpen && consecutiveOpenEyeFrames >= 2
+                    val closedForSleepDecision = !eyesConfirmedOpen
                     val now = SystemClock.elapsedRealtime()
                     if (closedForSleepDecision) {
                         if (eyesClosedSince == 0L) eyesClosedSince = now
