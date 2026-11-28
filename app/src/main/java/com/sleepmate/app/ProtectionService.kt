@@ -755,23 +755,27 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         }
                     }
 
-                    // Default to the closed/sleep direction. Only two consecutive reliable
-                    // frames with BOTH eyes open may reset the closed-eye timer.
+                    // A first reliable both-eyes-open frame is a pending confirmation:
+                    // preserve the existing closed timer, but do not trigger protection yet.
+                    // The next analyzed frame either confirms awake (resets the timer) or
+                    // cancels this pending state and resumes the closed/sleep decision.
                     val eyesConfirmedOpen = bothEyesReliablyOpen && consecutiveOpenEyeFrames >= 2
-                    val closedForSleepDecision = !eyesConfirmedOpen
-                    val now = SystemClock.elapsedRealtime()
-                    if (closedForSleepDecision) {
-                        if (eyesClosedSince == 0L) eyesClosedSince = now
-                        val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
-                        val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
-                        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-                        if (eyesClosedLongEnough && phoneStillLongEnough &&
-                            screenInteractive && power.isInteractive && targetAppForeground &&
-                            triggered.compareAndSet(false, true)) {
-                            scope.launch { performProtection() }
+                    val pendingOpenConfirmation = bothEyesReliablyOpen && consecutiveOpenEyeFrames == 1
+                    if (!pendingOpenConfirmation) {
+                        val now = SystemClock.elapsedRealtime()
+                        if (eyesConfirmedOpen) {
+                            eyesClosedSince = 0L
+                        } else {
+                            if (eyesClosedSince == 0L) eyesClosedSince = now
+                            val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
+                            val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
+                            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+                            if (eyesClosedLongEnough && phoneStillLongEnough &&
+                                screenInteractive && power.isInteractive && targetAppForeground &&
+                                triggered.compareAndSet(false, true)) {
+                                scope.launch { performProtection() }
+                            }
                         }
-                    } else {
-                        eyesClosedSince = 0L
                     }
                 }
                 .addOnFailureListener(cameraExecutor) { error ->
