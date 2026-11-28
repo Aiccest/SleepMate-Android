@@ -558,16 +558,26 @@ private fun LogsScreen(activity: MainActivity, onBack: () -> Unit) {
     val visibleEntries = if (earOnly) entries.filter { it.contains("[EAR_TEST]") } else entries
     Column(Modifier.fillMaxSize()) {
         PageHeader("运行日志", onBack)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { earOnly = false }) { Text("全部日志") }
-            OutlinedButton(onClick = { earOnly = true }) { Text("EAR测试记录") }
-            OutlinedButton(onClick = { entries = SleepMateLog.read(activity) }) { Text("刷新") }
-            OutlinedButton(onClick = {
-                val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("SleepMate运行日志", entries.joinToString("\n")))
-                android.widget.Toast.makeText(activity, "日志已复制", android.widget.Toast.LENGTH_SHORT).show()
-            }, enabled = visibleEntries.isNotEmpty()) { Text(if (earOnly) "复制EAR记录" else "复制日志") }
-            OutlinedButton(onClick = { SleepMateLog.clear(activity); entries = emptyList() }) { Text("清空") }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { earOnly = false }) { Text("全部日志") }
+                OutlinedButton(onClick = { earOnly = true }) { Text("EAR测试记录") }
+                OutlinedButton(onClick = { entries = SleepMateLog.read(activity) }) { Text("刷新") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("SleepMate完整运行日志", entries.joinToString("\n")))
+                    android.widget.Toast.makeText(activity, "完整日志已复制", android.widget.Toast.LENGTH_SHORT).show()
+                }, enabled = entries.isNotEmpty()) { Text("复制日志") }
+                OutlinedButton(onClick = {
+                    val earEntries = entries.filter { it.contains("[EAR_TEST]") }
+                    val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("SleepMate EAR测试记录", earEntries.joinToString("\n")))
+                    android.widget.Toast.makeText(activity, "EAR记录已复制", android.widget.Toast.LENGTH_SHORT).show()
+                }, enabled = entries.any { it.contains("[EAR_TEST]") }) { Text("复制EAR记录") }
+                OutlinedButton(onClick = { SleepMateLog.clear(activity); entries = emptyList() }) { Text("清空") }
+            }
         }
         Text(
             if (earOnly) "EAR测试记录只采样少量真实摄像头帧，包含左右眼轮廓点坐标和原始EAR值。只用于校验点位与阈值，不参与睡眠判断。"
