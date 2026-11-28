@@ -93,6 +93,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var reliableFaceFrameCount = 0
     @Volatile private var stableOpenEyeFrameCount = 0
     @Volatile private var stableClosedEyeFrameCount = 0
+    @Volatile private var unknownEyeStateFrameCount = 0
     @Volatile private var cameraFramesReceived = 0
     @Volatile private var cameraDuplicateTimestampFrames = 0
     @Volatile private var cameraLastFrameTimestampNs = -1L
@@ -462,7 +463,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     3 -> 25
                     else -> 30
                 }
-                SleepMateLog.add(this@ProtectionService, "本轮未确认睡眠；原因=${reason}；有效画面=${result?.second}；可靠人脸=${result?.first}；取得双眼有效概率=${result?.third}；候选脸帧数=${candidateFaceCount}；拒绝候选脸数=${rejectedCandidateFaceCount}；可靠人脸帧数=${reliableFaceFrameCount}；有效分析帧数=${analyzedFrameCount}；稳定睁眼帧数=${stableOpenEyeFrameCount}；稳定闭眼帧数=${stableClosedEyeFrameCount}；手机静止时长=${stillFor}毫秒；下次复查约${minutes}分钟后")
+                SleepMateLog.add(this@ProtectionService, "本轮未确认睡眠；原因=${reason}；有效画面=${result?.second}；可靠人脸=${result?.first}；取得双眼有效概率=${result?.third}；候选脸帧数=${candidateFaceCount}；拒绝候选脸数=${rejectedCandidateFaceCount}；可靠人脸帧数=${reliableFaceFrameCount}；有效分析帧数=${analyzedFrameCount}；稳定睁眼帧数=${stableOpenEyeFrameCount}；稳定闭眼帧数=${stableClosedEyeFrameCount}；眼睛状态无法判断帧数=${unknownEyeStateFrameCount}；手机静止时长=${stillFor}毫秒；下次复查约${minutes}分钟后")
                 updateNotification("本轮未确认睡眠；约${minutes}分钟后复查")
                 scheduleDetection(minutes * 60_000L)
             }
@@ -481,6 +482,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         reliableFaceFrameCount = 0
         stableOpenEyeFrameCount = 0
         stableClosedEyeFrameCount = 0
+        unknownEyeStateFrameCount = 0
         cameraFramesReceived = 0
         cameraDuplicateTimestampFrames = 0
         cameraLastFrameTimestampNs = -1L
@@ -723,21 +725,32 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         .maxByOrNull { it.boundingBox.width().toLong() * it.boundingBox.height().toLong() }
                     val left = faceWithEyes?.leftEyeOpenProbability
                     val right = faceWithEyes?.rightEyeOpenProbability
-                    if (left != null && right != null) {
-                        eyeStateDetectedInWindow = true
-                        val eyesClosed = left < 0.25f && right < 0.25f
-                        if (eyesClosed) {
-                            stableClosedEyeFrameCount++
-                            if (stableClosedEyeFrameCount >= 2) eyesClosedDetectedInWindow = true
-                        } else {
-                            stableOpenEyeFrameCount++
-                            if (stableOpenEyeFrameCount >= 2) eyesOpenDetectedInWindow = true
-                        }
+                    val frontalPoseReliable = faceWithEyes != null &&
+                        kotlin.math.abs(faceWithEyes.headEulerAngleY) <= 18f
+                    val bothEyesClosed = left != null && right != null &&
+                        left < 0.25f && right < 0.25f
+                    val bothEyesOpen = left != null && right != null &&
+                        left >= 0.25f && right >= 0.25f
+                    val eyeStateUnknown = !frontalPoseReliable || (!bothEyesClosed && !bothEyesOpen)
+
+                    if (left != null && right != null) eyeStateDetectedInWindow = true
+                    if (eyeStateUnknown) {
+                        // User preference: uncertain eye state is treated in the sleep direction,
+                        // but remains separately counted rather than mislabeled as confirmed closed.
+                        unknownEyeStateFrameCount++
+                    } else if (bothEyesClosed) {
+                        stableClosedEyeFrameCount++
+                        if (stableClosedEyeFrameCount >= 2) eyesClosedDetectedInWindow = true
+                    } else {
+                        stableOpenEyeFrameCount++
+                        if (stableOpenEyeFrameCount >= 2) eyesOpenDetectedInWindow = true
                     }
 
-                    val closed = left != null && right != null && left < 0.25f && right < 0.25f
+                    // Unknown (missing face/probability, non-frontal pose, or conflicting eyes)
+                    // follows the closed-eye timer as explicitly requested by the user.
+                    val closedForSleepDecision = eyeStateUnknown || bothEyesClosed
                     val now = SystemClock.elapsedRealtime()
-                    if (closed) {
+                    if (closedForSleepDecision) {
                         if (eyesClosedSince == 0L) eyesClosedSince = now
                         val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
                         val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
