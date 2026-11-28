@@ -72,6 +72,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var lastForegroundPackage: String? = null
     private var lastForegroundEventTimestamp = 0L
     private var lastUsageEventQueryAt = 0L
+    // UsageEvents activity lifecycle events are per-Activity, not per-package.
+    // Keep every resumed Activity so one Activity pausing cannot hide another
+    // still-resumed Activity belonging to the same selected app.
+    private val resumedActivities = LinkedHashMap<String, Long>()
     private val processedUsageEvents = LinkedHashSet<String>()
     private var foregroundMonitorJob: Job? = null
     private var lastMonitorHeartbeatAt = 0L
@@ -272,8 +276,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         val selected = MediaAppPreferences.getSelectedPackages(this)
         if (selected.isEmpty()) { setTargetAppForeground(false); return false }
         val now = System.currentTimeMillis()
-        // Initialize from a short recent window; thereafter query incrementally with
-        // a small overlap so delayed UsageEvents are less likely to be missed.
+        // Keep a small overlap so delayed UsageEvents are less likely to be missed.
         val eventWindowStart = if (lastUsageEventQueryAt == 0L) {
             now - INITIAL_USAGE_EVENT_WINDOW_MS
         } else {
@@ -286,34 +289,53 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             Log.e(TAG, "UsageStats queryEvents failed", e)
             return false
         }
+
         val event = UsageEvents.Event()
-        var foreground = lastForegroundPackage
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
-            val eventKey = "${event.timeStamp}:${event.eventType}:${event.packageName}"
+            val className = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                event.className
+            } else {
+                null
+            }
+            val eventKey = "${event.timeStamp}:${event.eventType}:${event.packageName}:${className.orEmpty()}"
             if (!processedUsageEvents.add(eventKey)) continue
             if (processedUsageEvents.size > MAX_REMEMBERED_USAGE_EVENTS) {
-                val oldest = processedUsageEvents.firstOrNull()
-                if (oldest != null) processedUsageEvents.remove(oldest)
+                processedUsageEvents.remove(processedUsageEvents.firstOrNull())
             }
+
+            // ACTIVITY_RESUMED/PAUSED are the API 29+ names for the legacy
+            // MOVE_TO_FOREGROUND/BACKGROUND event values. Do not list both aliases
+            // in a when branch: they are the same integer constants.
+            val activityKey = "${event.packageName}\u0000${className ?: "<unknown-activity>"}"
             when (event.eventType) {
-                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED -> {
-                    foreground = event.packageName
+                UsageEvents.Event.ACTIVITY_RESUMED -> {
+                    resumedActivities[activityKey] = event.timeStamp
                     if (event.timeStamp > lastForegroundEventTimestamp) {
                         lastForegroundEventTimestamp = event.timeStamp
                     }
                 }
-                UsageEvents.Event.MOVE_TO_BACKGROUND, UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED ->
-                    if (foreground == event.packageName) foreground = null
+                UsageEvents.Event.ACTIVITY_PAUSED -> {
+                    // A pause applies only to this Activity. Other resumed Activities
+                    // in the same package (or another split-screen app) remain active.
+                    resumedActivities.remove(activityKey)
+                }
             }
         }
+
         lastUsageEventQueryAt = now
+        val foreground = resumedActivities.maxByOrNull { it.value }
+            ?.key
+            ?.substringBefore('\u0000')
         lastForegroundPackage = foreground
+        val selectedAppResumed = resumedActivities.keys.any { key ->
+            key.substringBefore('\u0000') in selected
+        }
         if (lastLoggedForegroundPackage != foreground) {
-            SleepMateLog.add(this, "前台应用识别变化：${lastLoggedForegroundPackage ?: "无/未知"} → ${foreground ?: "无/未知"}；所选应用前台=${foreground in selected}")
+            SleepMateLog.add(this, "前台应用识别变化：${lastLoggedForegroundPackage ?: "无/未知"} → ${foreground ?: "无/未知"}；所选应用仍有恢复中的页面=$selectedAppResumed")
             lastLoggedForegroundPackage = foreground
         }
-        setTargetAppForeground(foreground in selected)
+        setTargetAppForeground(selectedAppResumed)
         return true
     }
 
