@@ -780,6 +780,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }
                 .addOnFailureListener(cameraExecutor) { error ->
                     faceValidationFailedInWindow = true
+                    // A failed frame breaks the consecutive-open confirmation sequence.
+                    consecutiveOpenEyeFrames = 0
                     SleepMateLog.add(this, "图像分析任务失败；本轮不作B/C睡眠判断；window=$windowId；异常=${error.javaClass.simpleName}:${error.message}")
                     Log.e(TAG, "ML Kit frame processing failed", error)
                 }
@@ -791,6 +793,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     }
                 }
         } catch (e: Exception) {
+            // A frame that cannot be submitted/analyzed cannot count toward
+            // consecutive both-eyes-open confirmation.
+            consecutiveOpenEyeFrames = 0
             SleepMateLog.add(this, "图像帧提交/读取异常；window=$windowId；异常=${e.javaClass.simpleName}:${e.message}")
             Log.e(TAG, "Image frame submission failed", e)
             // Submission can fail before a Task is returned; release both resources.
